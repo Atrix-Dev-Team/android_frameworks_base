@@ -195,6 +195,7 @@ public class DevicePolicyManager {
      * Constant for {@link #setPasswordQuality}: the user must swipe a finger
      * to unlock the screen.  Note that quality constants are
      * ordered so that higher values are more restrictive.
+     * @hide
      */
     public static final int PASSWORD_QUALITY_FINGER = 0x1FFFF;
 
@@ -429,9 +430,11 @@ public class DevicePolicyManager {
     /**
      * Flag for {@link #resetPassword}: Enable/Disable finger lock
      */
+    /** @hide */
     public static final int ENABLE_FINGER_LOCK = 0x1000;
+    /** @hide */
     public static final int DISABLE_FINGER_LOCK = 0x1001;
-    
+
     /**
      * Force a new device unlock password (the password needed to access the
      * entire device, not for individual accounts) on the user.  This takes
