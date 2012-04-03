@@ -110,12 +110,14 @@ class FingerUnlockScreen extends LinearLayoutWithDefaultTouchRecepient
     // Below four are related with tactile feedback...
     // A flag to indicate if tactile feedback is supported.
     private boolean mTactileFeedbackEnabled = false;
-    // Vibrator pattern for creating a tactile bump
-    private static final long[] DEFAULT_VIBE_PATTERN = {0, 1, 40, 41};
+    // Vibrator pattern for swipe start
+    private static final long[] START_VIBE_PATTERN = {0, 1, 20, 21};
+    // Vibrator pattern for invalid/incorrect swipes
+    private static final long[] INCORRECT_VIBE_PATTERN = {0, 100, 125, 100};
+    // Vibrator pattern for correct swipes
+    private static final long[] CORRECT_VIBE_PATTERN = {0, 50, 125, 250};
     // Vibrator for creating tactile feedback
     private Vibrator vibe;
-    // Vibration pattern, either default or customized
-    private long[] mVibePattern;
 
     private String mDateFormatString;
 
@@ -167,7 +169,7 @@ class FingerUnlockScreen extends LinearLayoutWithDefaultTouchRecepient
 
     static Thread mExecutionThread = null;
     private Thread mUiThread;
-    private boolean mbFeedbackDelivered = false;
+    private boolean mbInvalidSwipe = false;
     private VerifyRunner mVerifyRunner = new VerifyRunner();
     private Context m_Context;
 
@@ -355,12 +357,6 @@ class FingerUnlockScreen extends LinearLayoutWithDefaultTouchRecepient
             }
         });
 
-        if (mTactileFeedbackEnabled) {
-            // allow vibration pattern to be customized
-            if (DEBUG) Log.d(TAG, "Load vibration pattern");
-            mVibePattern = loadVibratePattern(com.android.internal.R.array.config_virtualKeyVibePattern);
-        }
-
         // assume normal footer mode for now
         updateFooter(FooterMode.Normal);
 
@@ -474,24 +470,6 @@ class FingerUnlockScreen extends LinearLayoutWithDefaultTouchRecepient
 
     private void refreshTimeAndDateDisplay() {
         mDate.setText(DateFormat.format(mDateFormatString, new Date()));
-    }
-
-    private long[] loadVibratePattern(int id) {
-        int[] pattern = null;
-        try {
-            pattern = getResources().getIntArray(id);
-        } catch (Resources.NotFoundException e) {
-            Log.e(TAG, "Vibrate pattern missing, using default", e);
-        }
-        if (pattern == null) {
-            return DEFAULT_VIBE_PATTERN;
-        }
-
-        long[] tmpPattern = new long[pattern.length];
-        for (int i = 0; i < pattern.length; i++) {
-            tmpPattern[i] = pattern[i];
-        }
-        return tmpPattern;
     }
 
     @Override
@@ -924,6 +902,12 @@ class FingerUnlockScreen extends LinearLayoutWithDefaultTouchRecepient
 
             try {
                 switch (iResult) {
+                    case AuthentecHelper.eAM_STATUS_NO_STORED_CREDENTIAL:
+                        // Might happen if the user wipes their database
+                        // and the fingerprint unlock method remains active.
+                        // Let it continue with the OK case so screen unlocks
+                        if (DEBUG) Log.d(TAG,"No stored credential");
+
                     case AuthentecHelper.eAM_STATUS_OK:
                         m_bVerifyied = true;
                         if (DEBUG) Log.d(TAG,"keyguardDone, m_bVerifyied=" + m_bVerifyied);
@@ -939,12 +923,6 @@ class FingerUnlockScreen extends LinearLayoutWithDefaultTouchRecepient
 
                     case AuthentecHelper.eAM_STATUS_CREDENTIAL_LOCKED:
                         // When m_bPaused becomes true.
-                        bRetryAfterLockout = true;
-                        break;
-
-                    case AuthentecHelper.eAM_STATUS_NO_STORED_CREDENTIAL:
-                        // Should never happen.
-                        if (DEBUG) Log.d(TAG,"No stored credential");
                         bRetryAfterLockout = true;
                         break;
 
@@ -964,7 +942,7 @@ class FingerUnlockScreen extends LinearLayoutWithDefaultTouchRecepient
                         break;
 
                     case AuthentecHelper.eAM_STATUS_UNKNOWN_ERROR:
-                        Log.e(TAG, "Unkown error!");
+                        Log.e(TAG, "Unknown error!");
                         bRetryAfterLockout = true;
                         break;
 
@@ -1105,7 +1083,9 @@ class FingerUnlockScreen extends LinearLayoutWithDefaultTouchRecepient
         }
 
         if (target.equals("swipe_good")) {
-               runOnUiThread(new Runnable() {
+            if (mTactileFeedbackEnabled) vibe.vibrate(CORRECT_VIBE_PATTERN, -1);
+
+            runOnUiThread(new Runnable() {
                 public void run() {
                     toast(getContext().getString(R.string.keyguard_finger_match));
                 }
@@ -1117,11 +1097,13 @@ class FingerUnlockScreen extends LinearLayoutWithDefaultTouchRecepient
         /* we've already displayed the feedback, so we don't want to worry */
         /* about an additional message.                                    */
         if (target.equals("swipe_bad")) {
-            // Update the total failed attempts.
-            mTotalFailedPatternAttempts++;
-            mFailedPatternAttemptsSinceLastTimeout++;
+            if (mTactileFeedbackEnabled) vibe.vibrate(INCORRECT_VIBE_PATTERN, -1);
 
-            if (!mbFeedbackDelivered) {
+            if (!mbInvalidSwipe) {
+                // Update the total failed attempts.
+                mTotalFailedPatternAttempts++;
+                mFailedPatternAttemptsSinceLastTimeout++;
+
                 runOnUiThread(new Runnable() {
                     public void run() {
                         toast(getContext().getString(R.string.keyguard_finger_not_match));
@@ -1135,71 +1117,55 @@ class FingerUnlockScreen extends LinearLayoutWithDefaultTouchRecepient
                     }
                 });
             } else {
-                runOnUiThread(new Runnable() {
-                    public void run() {
-                        mCallback.reportFailedUnlockAttempt();
-                        if (mFailedPatternAttemptsSinceLastTimeout >=
-                                LockPatternUtils.FAILED_ATTEMPTS_BEFORE_TIMEOUT) {
-                            pokeWakelock(1000);
-                            long deadline = mLockPatternUtils.setLockoutAttemptDeadline();
-                            handleAttemptLockout(deadline);
-                        }
-                    }
-                });
+                mbInvalidSwipe = false;
             }
 
-            mbFeedbackDelivered = false;
             return;
         }
 
         /* if the target is any of our feedback messages, provide a toast... */
         if (target.equals("swipe_too_fast")) {
-            mbFeedbackDelivered = true;
+            mbInvalidSwipe = true;
             runOnUiThread(new Runnable() {
                 public void run() {
                     toast(getContext().getString(R.string.keyguard_finger_swipe_too_fast));
                 }
             });
             return;
-        }
-        if (target.equals("swipe_too_slow")) {
-            mbFeedbackDelivered = true;
+        } else if (target.equals("swipe_too_slow")) {
+            mbInvalidSwipe = true;
             runOnUiThread(new Runnable() {
                 public void run() {
                     toast(getContext().getString(R.string.keyguard_finger_swipe_too_slow));
                 }
             });
             return;
-        }
-        if (target.equals("swipe_too_short")) {
-            mbFeedbackDelivered = true;
+        } else if (target.equals("swipe_too_short")) {
+            mbInvalidSwipe = true;
             runOnUiThread(new Runnable() {
                 public void run() {
                     toast(getContext().getString(R.string.keyguard_finger_swipe_too_short));
                 }
             });
             return;
-        }
-        if (target.equals("swipe_too_skewed")) {
-            mbFeedbackDelivered = true;
+        } else if (target.equals("swipe_too_skewed")) {
+            mbInvalidSwipe = true;
             runOnUiThread(new Runnable() {
                 public void run() {
                     toast(getContext().getString(R.string.keyguard_finger_swipe_too_skewed));
                 }
             });
             return;
-        }
-        if (target.equals("swipe_too_far_left")) {
-            mbFeedbackDelivered = true;
+        } else if (target.equals("swipe_too_far_left")) {
+            mbInvalidSwipe = true;
             runOnUiThread(new Runnable() {
                 public void run() {
                     toast(getContext().getString(R.string.keyguard_finger_swipe_too_far_left));
                 }
             });
             return;
-        }
-        if (target.equals("swipe_too_far_right")) {
-            mbFeedbackDelivered = true;
+        } else if (target.equals("swipe_too_far_right")) {
+            mbInvalidSwipe = true;
             runOnUiThread(new Runnable() {
                 public void run() {
                     toast(getContext().getString(R.string.keyguard_finger_swipe_too_far_right));
@@ -1226,23 +1192,18 @@ class FingerUnlockScreen extends LinearLayoutWithDefaultTouchRecepient
         if (target.matches("[CD][1-9]0?$")) return;
 
         /* if the target is please_swipe, remove the user prompt */
-        if (target.equals("please_swipe"))
-        {
+        if (target.equals("please_swipe")) {
+            if (mTactileFeedbackEnabled) vibe.vibrate(START_VIBE_PATTERN, -1);
+
             runOnUiThread(new Runnable() {
                 public void run() {
-                      mUserPrompt.setText("");
+                    mUserPrompt.setText("");
                     /**
                      * acquire the handoff lock that will keep the cpu running. this will
                      * be released once the fingerprint keyguard has set the next verification
                      * up and poked the mWakelock of itself (not the one of the KeyguradViewMediator).
                      */
                     mHandOffWakeLock.acquire();
-
-                    if (mTactileFeedbackEnabled) {
-                        // Generate tactile feedback
-                        if (DEBUG) Log.d(TAG,"Finger on vibration");
-                        vibe.vibrate(mVibePattern, -1);
-                    }
                 }
             });
             return;
